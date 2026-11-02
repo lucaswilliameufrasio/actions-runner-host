@@ -8,10 +8,16 @@ if [ -z "${BASE_IMAGE:-}" ]; then
     echo "BASE_IMAGE is required, for example debian:13" >&2
     exit 1
 fi
-if ! printf '%s' "$BASE_IMAGE" | grep -Eq '^[a-z0-9][a-z0-9._:-]*$'; then
+if ! printf '%s' "$BASE_IMAGE" | grep -Eq '^[a-z0-9][a-z0-9._:/-]*$'; then
     echo "BASE_IMAGE must be a plain image reference" >&2
     exit 1
 fi
+case "$BASE_IMAGE" in
+    *..*|/*)
+        echo "BASE_IMAGE must be a plain image reference" >&2
+        exit 1
+        ;;
+esac
 
 image_slug="$(printf '%s' "$BASE_IMAGE" | tr ':/' '--')"
 image_name="actions-runner-host-validation:${image_slug}"
@@ -94,7 +100,7 @@ container_is_running() {
 wait_for_systemd_ssh() {
     attempt=0
     while [ "$attempt" -lt 40 ]; do
-        if container_is_running && docker exec "$container_name" /bin/sh -c 'test -d /run/systemd/system && { pgrep sshd >/dev/null || systemctl is-active --quiet ssh.socket || systemctl is-active --quiet ssh.service; }'; then
+        if container_is_running && docker exec "$container_name" /bin/sh -c 'test -d /run/systemd/system && { pgrep sshd >/dev/null || systemctl is-active --quiet ssh.socket || systemctl is-active --quiet ssh.service || systemctl is-active --quiet sshd.socket || systemctl is-active --quiet sshd.service; }'; then
             return 0
         fi
         if ! container_is_running; then
@@ -113,7 +119,7 @@ fi
 report_boot_failure() {
     docker inspect -f 'status={{.State.Status}} exit={{.State.ExitCode}}' "$container_name" >&2 || true
     if container_is_running; then
-        docker exec "$container_name" /bin/sh -c 'ps -p 1 -o comm=; if [ -d /run/systemd/system ]; then echo systemd_dir=yes; else echo systemd_dir=no; fi; systemctl is-system-running || true; systemctl is-active ssh.service ssh.socket || true' >&2 || true
+        docker exec "$container_name" /bin/sh -c 'ps -p 1 -o comm=; if [ -d /run/systemd/system ]; then echo systemd_dir=yes; else echo systemd_dir=no; fi; systemctl is-system-running || true; systemctl is-active ssh.service ssh.socket sshd.service sshd.socket || true' >&2 || true
     fi
     docker logs "$container_name" 2>&1 | tail -n 40 >&2 || true
 }

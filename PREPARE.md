@@ -1,6 +1,6 @@
 # Preparo da VPS para o runner self-hosted
 
-Esta CLI prepara um host Debian ou Ubuntu antes do agent oficial do GitHub Actions. Ela não baixa o runner, não pede token e não executa `config.sh` nem `svc.sh`.
+Esta CLI prepara um host Linux antes do agent oficial do GitHub Actions. Ela não baixa o runner, não pede token e não executa `config.sh` nem `svc.sh`.
 
 Nenhum alias SSH fica gravado no repositório.
 
@@ -17,7 +17,11 @@ Nenhum alias SSH fica gravado no repositório.
   ```
 
 - A conta do alias entra como root, tem sudo sem senha (`sudo -n`), ou é um usuário comum cujo root abre com `su -`. A CLI não cria sudoers e não grava senha.
-- A VPS é Debian ou Ubuntu, com systemd. Tailscale é informativo: o acesso administrativo continua pelo alias.
+- A VPS usa systemd e uma destas famílias:
+  - Debian ou Ubuntu (`apt`)
+  - RHEL, Rocky Linux, AlmaLinux, Oracle Linux, CentOS Stream, Fedora ou Amazon Linux (`dnf` ou `yum`)
+  - openSUSE Leap ou SLES (`zypper`)
+- Tailscale é informativo: o acesso administrativo continua pelo alias.
 
 ## Executar
 
@@ -32,9 +36,9 @@ make prepare
 3. A CLI consulta a VPS sem alterá-la e mostra o plano.
 4. Escolha **aplicar**. Esc ou **cancelar** não muda a máquina.
 
-No Debian em que o SSH entra com um usuário comum, o plano mostra `su - depois do login SSH`. Depois da confirmação, o `su -` pede a senha de root uma vez neste terminal. A senha não vai para argumento, arquivo ou log. O preparo e a verificação rodam nessa mesma sessão. Os scripts temporários ficam em `~/.local/state/actions-runner-host` no usuário do SSH e são apagados ao terminar.
+Quando o SSH entra com um usuário comum, o plano mostra `su - depois do login SSH`. Depois da confirmação, o `su -` pede a senha de root uma vez neste terminal. A senha não vai para argumento, arquivo ou log. O preparo e a verificação rodam nessa mesma sessão. Os scripts temporários ficam em `~/.local/state/actions-runner-host` no usuário do SSH e são apagados ao terminar.
 
-O preparo cria o usuário sem shell de login, com home `0700` em `/var/lib/<usuário>` e o diretório `/var/lib/<usuário>/actions-runner`. Instala `ca-certificates`, `curl`, `tar`, `git`, `libkrb5-3`, `zlib1g` e o `libssl`, `liblttng` e `libicu` que existirem na distro. `apt-get update` não faz upgrade geral e não reinicia serviços.
+O preparo cria o usuário sem shell de login, com home `0700` em `/var/lib/<usuário>` e o diretório `/var/lib/<usuário>/actions-runner`. Instala `ca-certificates`, `curl`, `tar`, `git` e as bibliotecas de runtime do agent que a distro tiver: `libssl`/`openssl-libs`, `liblttng`/`lttng-ust`, `libicu` e Kerberos/zlib com o nome da família. Em rpm, `curl-minimal` já satisfaz o comando `curl`, e no EL 10 o pacote `zlib-ng-compat` fornece `zlib`. No zypper, o LTTng instalado é o primeiro pacote existente entre `lttng-ust`, `liblttng-ust1` e `liblttng-ust0`. Não faz upgrade geral e não reinicia serviços. Em RHEL e derivados, habilita o repositório opcional de runtime (`crb`, `powertools` ou CodeReady) quando ele já existe desabilitado.
 
 Se o usuário já existe e o home, o shell e os grupos conferem, a execução reaproveita a conta. Se o home for outro, o shell permitir login, ou a conta estiver em `sudo`, `admin`, `wheel` ou `docker`, a CLI para e não modifica essa conta.
 
@@ -56,7 +60,7 @@ Firewall, ACLs do Tailscale, DNS, Nginx, registro no GitHub e sudoers. A CLI tam
 
 ## Validação local
 
-`make validate-images` repete o fluxo em Debian 12, Debian 13, Ubuntu 22.04, Ubuntu 24.04 e Ubuntu 26.04. O comando sobe um container com systemd, entra por SSH num usuário comum e usa `su -`. Não registra o agent. `make check` não depende desse teste. A lista fechada está em `validation/images.txt`.
+`make validate-images` repete o fluxo nas releases listadas em `validation/images.txt`. O comando sobe um container com systemd, entra por SSH num usuário comum e usa `su -`. Não registra o agent. `make check` não depende desse teste.
 
 ## Diagnóstico
 

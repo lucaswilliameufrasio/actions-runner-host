@@ -107,7 +107,7 @@ type hostInspection struct {
 	versionID         string
 	architecture      string
 	systemd           bool
-	debianFamily      bool
+	packageFamily     string
 	privilege         string
 	suAvailable       bool
 	tailscaleIPv4     string
@@ -129,6 +129,7 @@ func parseInspection(output string) (hostInspection, error) {
 		"arch",
 		"systemd",
 		"supported",
+		"package_family",
 		"privilege",
 		"su",
 		"tailscale_ipv4",
@@ -152,11 +153,14 @@ func parseInspection(output string) (hostInspection, error) {
 		return hostInspection{}, fmt.Errorf("campo systemd: %w", err)
 	}
 	inspection.systemd = systemd
-	debianFamily, err := parseYesNo(fields["supported"])
+	supported, err := parseYesNo(fields["supported"])
 	if err != nil {
 		return hostInspection{}, fmt.Errorf("campo supported: %w", err)
 	}
-	inspection.debianFamily = debianFamily
+	if err := validateReportedFamily(fields["package_family"], supported); err != nil {
+		return hostInspection{}, err
+	}
+	inspection.packageFamily = fields["package_family"]
 	switch inspection.privilege {
 	case "root", "sudo", "none":
 	default:
@@ -257,10 +261,29 @@ func parseRemoteFields(output string, required []string) (map[string]string, err
 	return fields, nil
 }
 
+func validateReportedFamily(family string, supported bool) error {
+	switch family {
+	case "apt", "rpm", "zypper":
+		if !supported {
+			return errors.New("família de pacotes não confere com o suporte")
+		}
+		return nil
+	case "unsupported":
+		if supported {
+			return errors.New("família de pacotes não confere com o suporte")
+		}
+		return nil
+	default:
+		return errors.New("família de pacotes inválida")
+	}
+}
+
 func assess(inspection hostInspection) readiness {
 	warnings := make([]string, 0, 3)
-	if !inspection.debianFamily {
-		return readiness{blockedReason: "A VPS não é Debian ou Ubuntu. Nada foi alterado."}
+	switch inspection.packageFamily {
+	case "apt", "rpm", "zypper":
+	default:
+		return readiness{blockedReason: "A VPS não é Debian, Ubuntu, RHEL ou derivado, Fedora, Amazon Linux nem SUSE. Nada foi alterado."}
 	}
 	if !inspection.systemd {
 		return readiness{blockedReason: "A VPS não está usando systemd. Nada foi alterado."}
@@ -356,9 +379,13 @@ func confirmSummary(hostAlias string, username string, inspection hostInspection
 	fmt.Fprintf(&builder, "Tailscale IPv4: %s\n", tailscale)
 	fmt.Fprintf(&builder, "Saída para o GitHub: %s\n", github)
 	fmt.Fprintf(&builder, "Usuário remoto: %s\n\n", userDescription)
-	builder.WriteString("A CLI vai criar ou reaproveitar o usuário, ajustar os diretórios e instalar pacotes apt: ")
-	builder.WriteString(strings.Join(basePackages, ", "))
-	builder.WriteString(", mais libssl, liblttng e libicu disponíveis na distro.\n")
+	packageDescription, err := packagePlan(inspection.packageFamily)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString("A CLI vai criar ou reaproveitar o usuário, ajustar os diretórios e ")
+	builder.WriteString(packageDescription)
+	builder.WriteString("\n")
 	builder.WriteString("Não registra o runner, não guarda token, não altera firewall e não coloca o usuário no grupo docker.\n")
 	if len(warnings) > 0 {
 		builder.WriteString("\nAvisos:\n")
@@ -367,6 +394,30 @@ func confirmSummary(hostAlias string, username string, inspection hostInspection
 		}
 	}
 	return builder.String(), nil
+}
+
+func packagePlan(family string) (string, error) {
+	switch family {
+	case "apt":
+		return "instalar pacotes apt: " + strings.Join(basePackages, ", ") + ", mais libssl, liblttng e libicu disponíveis na distro.", nil
+	case "rpm":
+		return "instalar pacotes dnf ou yum: ca-certificates, curl, " + strings.Join(rpmPackagesWithoutCertificates(), ", ") + ". curl-minimal já satisfaz o comando. Repositórios opcionais de runtime, como crb ou powertools, são habilitados quando existirem.", nil
+	case "zypper":
+		return "instalar pacotes zypper: " + strings.Join(zypperPackages, ", ") + ", mais o libz, libopenssl, liblttng e libicu disponíveis na distro.", nil
+	default:
+		return "", errors.New("família de pacotes desconhecida")
+	}
+}
+
+func rpmPackagesWithoutCertificates() []string {
+	packages := make([]string, 0, len(rpmPackages))
+	for _, packageName := range rpmPackages {
+		if packageName == "ca-certificates" {
+			continue
+		}
+		packages = append(packages, packageName)
+	}
+	return packages
 }
 
 func actionsRunnerArchitecture(machine string) (string, bool) {

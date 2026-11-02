@@ -126,12 +126,18 @@ func TestAssessBlocksUnsafeHosts(t *testing.T) {
 	}
 
 	unsupported := strings.Replace(readyInspection("absent", ""), "supported=yes", "supported=no", 1)
+	unsupported = strings.Replace(unsupported, "package_family=apt", "package_family=unsupported", 1)
 	inspection, err = parseInspection(unsupported)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if assess(inspection).blockedReason == "" {
-		t.Fatal("non-Debian host should be blocked")
+	blockedReason := assess(inspection).blockedReason
+	if !strings.Contains(blockedReason, "Amazon Linux") || !strings.Contains(blockedReason, "Nada foi alterado") {
+		t.Fatalf("blocked reason = %q", blockedReason)
+	}
+	mismatched := strings.Replace(readyInspection("absent", ""), "supported=yes", "supported=no", 1)
+	if _, err := parseInspection(mismatched); err == nil {
+		t.Fatal("supported flag must match the package family")
 	}
 }
 
@@ -146,6 +152,29 @@ func TestSummaryDoesNotRegisterTheRunner(t *testing.T) {
 	}
 	if !strings.Contains(summary, "Não registra o runner") || !strings.Contains(summary, "não coloca o usuário no grupo docker") {
 		t.Fatalf("summary missing the safety boundary:\n%s", summary)
+	}
+	if !strings.Contains(summary, "pacotes apt") || strings.Contains(summary, "krb5-libs") {
+		t.Fatalf("apt summary = %s", summary)
+	}
+	rpmInspection := inspection
+	rpmInspection.operatingSystemID = "rocky"
+	rpmInspection.packageFamily = "rpm"
+	rpmSummary, err := confirmSummary("vps-app", defaultRunnerUsername, rpmInspection, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rpmSummary, "pacotes dnf ou yum") || !strings.Contains(rpmSummary, "lttng-ust") {
+		t.Fatalf("rpm summary = %s", rpmSummary)
+	}
+	zypperInspection := inspection
+	zypperInspection.operatingSystemID = "opensuse-leap"
+	zypperInspection.packageFamily = "zypper"
+	zypperSummary, err := confirmSummary("vps-app", defaultRunnerUsername, zypperInspection, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(zypperSummary, "pacotes zypper") || !strings.Contains(zypperSummary, "liblttng") || strings.Contains(zypperSummary, "libkrb5-3") {
+		t.Fatalf("zypper summary = %s", zypperSummary)
 	}
 	if !strings.Contains(summary, "/var/lib/"+defaultRunnerUsername+"/actions-runner") {
 		t.Fatalf("summary missing the runner directory:\n%s", summary)
@@ -244,8 +273,14 @@ func TestApplyScriptStopsBeforeTheAgent(t *testing.T) {
 		"useradd --system --create-home",
 		"--shell",
 		"apt-get update",
+		"dnf install -y",
+		"zypper --non-interactive",
+		"krb5-libs",
+		"libopenssl1_1",
+		"liblttng-ust0",
 		"ca-certificates",
 		"libicu",
+		"amzn",
 		"sudo -n -l -U",
 		"reserved username",
 	}
@@ -327,6 +362,7 @@ func readyInspection(userState string, userDetail string) string {
 		"arch=aarch64",
 		"systemd=yes",
 		"supported=yes",
+		"package_family=apt",
 		"privilege=sudo",
 		"su=yes",
 		"tailscale_ipv4=100.64.0.1",

@@ -1,7 +1,23 @@
-# Debian-family releases the prepare CLI supports.
-# Other families stop before any change because /etc/debian_version is absent.
+# Supported server releases exercised by make validate-images.
+# Alpine is outside the official glibc runner platforms.
+# RHEL and SLES subscription images are not pulled here; Rocky, AlmaLinux,
+# Oracle Linux, and CentOS Stream exercise the rpm path, and openSUSE Leap
+# exercises the zypper path.
+
 debian:12
 debian:13
 ubuntu:22.04
 ubuntu:24.04
 ubuntu:26.04
+rockylinux:8
+rockylinux:9
+almalinux:9
+almalinux:10
+oraclelinux:9
+quay.io/centos/centos:stream9
+quay.io/centos/centos:stream10
+fedora:43
+fedora:44
+amazonlinux:2023
+opensuse/leap:15.6
+opensuse/leap:16.0

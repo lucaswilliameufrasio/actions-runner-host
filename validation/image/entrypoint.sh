@@ -24,4 +24,14 @@ if [ ! -s /etc/machine-id ]; then
     tr -d '-' < /proc/sys/kernel/random/uuid > /etc/machine-id
 fi
 
-exec /sbin/init
+if [ -x /sbin/init ]; then
+    exec /sbin/init
+fi
+if [ -x /usr/sbin/init ]; then
+    exec /usr/sbin/init
+fi
+if [ -x /usr/lib/systemd/systemd ]; then
+    exec /usr/lib/systemd/systemd
+fi
+echo "systemd init is missing" >&2
+exit 1

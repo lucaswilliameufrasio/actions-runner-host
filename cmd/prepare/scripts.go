@@ -40,6 +40,41 @@ privileged_group() {
   done
   return 1
 }
+
+detect_package_family() {
+  if [ -f /etc/debian_version ]; then
+    printf '%s\n' apt
+    return 0
+  fi
+  if [ -f /etc/redhat-release ]; then
+    printf '%s\n' rpm
+    return 0
+  fi
+  if [ -r /etc/os-release ]; then
+    family_id="$(
+      # shellcheck disable=SC1091
+      . /etc/os-release
+      printf '%s' "${ID:-}"
+    )"
+    family_like="$(
+      # shellcheck disable=SC1091
+      . /etc/os-release
+      printf '%s' "${ID_LIKE:-}"
+    )"
+    family_token="$(printf '%s %s' "$family_id" "$family_like" | tr '[:upper:]' '[:lower:]')"
+    case " ${family_token} " in
+      *" suse "*)
+        printf '%s\n' zypper
+        return 0
+        ;;
+      *" amzn "*|*" amazon "*|*" fedora "*|*" rhel "*|*" centos "*|*" rocky "*|*" almalinux "*|*" ol "*|*" oracle "*)
+        printf '%s\n' rpm
+        return 0
+        ;;
+    esac
+  fi
+  printf '%s\n' unsupported
+}
 `
 
 const inspectBody = `
@@ -71,10 +106,13 @@ if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
   systemd=yes
 fi
 
+package_family="$(detect_package_family)"
 supported=no
-if [ -f /etc/debian_version ]; then
-  supported=yes
-fi
+case "$package_family" in
+  apt|rpm|zypper)
+    supported=yes
+    ;;
+esac
 
 privilege=none
 if [ "$(id -u)" -eq 0 ]; then
@@ -137,6 +175,7 @@ printf 'version_id=%s\n' "$version_id"
 printf 'arch=%s\n' "$arch"
 printf 'systemd=%s\n' "$systemd"
 printf 'supported=%s\n' "$supported"
+printf 'package_family=%s\n' "$package_family"
 printf 'privilege=%s\n' "$privilege"
 printf 'su=%s\n' "$su_available"
 printf 'tailscale_ipv4=%s\n' "$tailscale_ipv4"
@@ -146,10 +185,14 @@ printf 'user_detail=%s\n' "$user_detail"
 `
 
 const applyBody = `
-if [ ! -f /etc/debian_version ]; then
-  echo "only Debian and Ubuntu are supported" >&2
-  exit 3
-fi
+package_family="$(detect_package_family)"
+case "$package_family" in
+  apt|rpm|zypper) ;;
+  *)
+    echo "only Debian, Ubuntu, RHEL and derivatives, Fedora, Amazon Linux, and SUSE are supported" >&2
+    exit 3
+    ;;
+esac
 if [ ! -d /run/systemd/system ] || ! command -v systemctl >/dev/null 2>&1; then
   echo "systemd is required" >&2
   exit 3
@@ -233,17 +276,121 @@ install_first_available() {
   echo "none of the candidate packages are available: $*" >&2
   return 1
 }
+rpm_install() {
+  if command -v dnf >/dev/null 2>&1; then
+    dnf install -y --setopt=install_weak_deps=False "$@"
+    return 0
+  fi
+  if command -v yum >/dev/null 2>&1; then
+    yum install -y "$@"
+    return 0
+  fi
+  echo "neither dnf nor yum is available" >&2
+  return 1
+}
+rpm_ensure_curl() {
+  if rpm -q curl >/dev/null 2>&1 || rpm -q curl-minimal >/dev/null 2>&1; then
+    return 0
+  fi
+  rpm_install curl
+}
+enable_rpm_runtime_repos() {
+  if ! command -v dnf >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! rpm -q dnf-plugins-core >/dev/null 2>&1; then
+    dnf install -y --setopt=install_weak_deps=False dnf-plugins-core || return 0
+  fi
+  if ! dnf config-manager --help >/dev/null 2>&1; then
+    return 0
+  fi
+  dnf repolist --all -q | while IFS= read -r repo_line; do
+    repo_id="${repo_line%% *}"
+    repo_id_lower="$(printf '%s' "$repo_id" | tr '[:upper:]' '[:lower:]')"
+    case "$repo_id_lower" in
+      ""|"repo"|*debug*|*source*|*src*)
+        continue
+        ;;
+      crb|powertools|*codeready*)
+        dnf config-manager --set-enabled "$repo_id" || true
+        ;;
+    esac
+  done
+}
+zypper_install() {
+  zypper --non-interactive --gpg-auto-import-keys install --no-recommends "$@"
+}
+zypper_install_first() {
+  for package_name in "$@"; do
+    if zypper --non-interactive info --type package "$package_name" >/dev/null 2>&1; then
+      zypper_install "$package_name"
+      return 0
+    fi
+  done
+  echo "none of the candidate packages are available: $*" >&2
+  return 1
+}
+zypper_install_existing() {
+  installed_any=no
+  for package_name in "$@"; do
+    if zypper --non-interactive info --type package "$package_name" >/dev/null 2>&1; then
+      zypper_install "$package_name"
+      installed_any=yes
+    fi
+  done
+  if [ "$installed_any" = no ]; then
+    echo "none of the candidate packages are available: $*" >&2
+    return 1
+  fi
+}
+zypper_install_libicu() {
+  libicu_package="$(
+    zypper --non-interactive search --type package libicu \
+      | while IFS='|' read -r _status package_name _remainder; do
+          package_name="$(printf '%s' "$package_name" | tr -d '[:space:]')"
+          case "$package_name" in
+            libicu[0-9]|libicu[0-9][0-9]|libicu[0-9][0-9][0-9]|libicu[0-9]_[0-9]|libicu[0-9][0-9]_[0-9]|libicu[0-9][0-9][0-9]_[0-9])
+              printf '%s\n' "$package_name"
+              ;;
+          esac
+        done \
+      | sort -V \
+      | tail -n 1
+  )" || true
+  if [ -z "$libicu_package" ]; then
+    echo "libicu runtime package not found" >&2
+    return 1
+  fi
+  zypper_install "$libicu_package"
+}
 
-apt-get update
-apt_get_install {{BASE_PACKAGES}}
-install_first_available libssl3t64 libssl3 libssl1.1 libssl1.0.2 libssl1.0.0
-install_first_available liblttng-ust1t64 liblttng-ust1 liblttng-ust0
-libicu_package="$(apt-cache search --names-only '^libicu[0-9]+$' | awk '{print $1}' | sort -V | tail -n 1)"
-if [ -z "$libicu_package" ]; then
-  echo "libicu runtime package not found" >&2
-  exit 1
-fi
-apt_get_install "$libicu_package"
+case "$package_family" in
+  apt)
+    apt-get update
+    apt_get_install {{BASE_PACKAGES}}
+    install_first_available libssl3t64 libssl3 libssl1.1 libssl1.0.2 libssl1.0.0
+    install_first_available liblttng-ust1t64 liblttng-ust1 liblttng-ust0
+    libicu_package="$(apt-cache search --names-only '^libicu[0-9]+$' | awk '{print $1}' | sort -V | tail -n 1)"
+    if [ -z "$libicu_package" ]; then
+      echo "libicu runtime package not found" >&2
+      exit 1
+    fi
+    apt_get_install "$libicu_package"
+    ;;
+  rpm)
+    enable_rpm_runtime_repos
+    rpm_ensure_curl
+    rpm_install {{RPM_PACKAGES}}
+    ;;
+  zypper)
+    zypper --non-interactive --gpg-auto-import-keys refresh
+    zypper_install {{ZYPPER_PACKAGES}}
+    zypper_install_first {{ZYPPER_ZLIB_PACKAGES}}
+    zypper_install_existing {{ZYPPER_OPENSSL_PACKAGES}}
+    zypper_install_first {{ZYPPER_LTTNG_PACKAGES}}
+    zypper_install_libicu
+    ;;
+esac
 
 if privileged_group; then
   echo "runner user is in a privileged group" >&2
@@ -315,7 +462,43 @@ printf 'shell_ok=%s\n' "$shell_ok"
 printf 'github_reachable=%s\n' "$github_reachable"
 `
 
-var packageNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]*$`)
+var packageNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9+._-]*$`)
+
+var rpmPackages = []string{
+	"ca-certificates",
+	"tar",
+	"git",
+	"krb5-libs",
+	"zlib",
+	"openssl-libs",
+	"lttng-ust",
+	"libicu",
+}
+
+var zypperPackages = []string{
+	"ca-certificates",
+	"curl",
+	"tar",
+	"git",
+	"krb5",
+}
+
+var zypperLttngPackages = []string{
+	"lttng-ust",
+	"liblttng-ust1",
+	"liblttng-ust0",
+}
+
+var zypperZlibPackages = []string{
+	"libz1",
+	"zlib",
+}
+
+var zypperOpenSSLPackages = []string{
+	"libopenssl3",
+	"libopenssl1_1",
+	"libopenssl1_0_0",
+}
 
 const stageFilesScript = `set -eu
 umask 077
@@ -343,9 +526,17 @@ func verifyScript() (string, error) {
 }
 
 func renderScript(body string) (string, error) {
-	for _, packageName := range basePackages {
-		if !packageNamePattern.MatchString(packageName) {
-			return "", fmt.Errorf("invalid package name %q", packageName)
+	packageLists := [][]string{
+		basePackages,
+		rpmPackages,
+		zypperPackages,
+		zypperZlibPackages,
+		zypperOpenSSLPackages,
+		zypperLttngPackages,
+	}
+	for _, packageList := range packageLists {
+		if err := validatePackageNames(packageList); err != nil {
+			return "", err
 		}
 	}
 	alternation, err := reservedUsernameAlternation()
@@ -355,14 +546,36 @@ func renderScript(body string) (string, error) {
 	if strings.Contains(markerFileName, "/") || strings.Contains(markerFileName, "{{") {
 		return "", errors.New("invalid marker file name")
 	}
+	replacements := map[string]string{
+		"{{RESERVED_USERNAMES}}":      alternation,
+		"{{BASE_PACKAGES}}":           strings.Join(basePackages, " "),
+		"{{RPM_PACKAGES}}":            strings.Join(rpmPackages, " "),
+		"{{ZYPPER_PACKAGES}}":         strings.Join(zypperPackages, " "),
+		"{{ZYPPER_ZLIB_PACKAGES}}":    strings.Join(zypperZlibPackages, " "),
+		"{{ZYPPER_OPENSSL_PACKAGES}}": strings.Join(zypperOpenSSLPackages, " "),
+		"{{ZYPPER_LTTNG_PACKAGES}}":   strings.Join(zypperLttngPackages, " "),
+		"{{MARKER_FILE}}":             markerFileName,
+	}
 	script := scriptPreamble + body
-	script = strings.ReplaceAll(script, "{{RESERVED_USERNAMES}}", alternation)
-	script = strings.ReplaceAll(script, "{{BASE_PACKAGES}}", strings.Join(basePackages, " "))
-	script = strings.ReplaceAll(script, "{{MARKER_FILE}}", markerFileName)
+	for placeholder, value := range replacements {
+		script = strings.ReplaceAll(script, placeholder, value)
+	}
 	if strings.Contains(script, "{{") {
 		return "", errors.New("unresolved script placeholder")
 	}
 	return script, nil
+}
+
+func validatePackageNames(packageNames []string) error {
+	if len(packageNames) == 0 {
+		return errors.New("package list is empty")
+	}
+	for _, packageName := range packageNames {
+		if !packageNamePattern.MatchString(packageName) {
+			return fmt.Errorf("invalid package name %q", packageName)
+		}
+	}
+	return nil
 }
 
 func reservedUsernameAlternation() (string, error) {
