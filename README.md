@@ -10,7 +10,7 @@ make check
 make prepare
 ```
 
-O alias SSH é pedido em toda execução. Não há host padrão. O passo a passo, os limites e a configuração posterior do agent estão em [`PREPARE.md`](PREPARE.md). A decisão de não usar o `runner-fleet` neste passo está em [`docs/ADR.md`](docs/ADR.md).
+O alias SSH é pedido em toda execução. Não há host padrão. O passo a passo, os limites e a configuração posterior do agent estão em [`PREPARE.md`](PREPARE.md). Esta CLI continua sendo o preparo sem control plane. O `runner-fleet` agora também prepara o host e administra runners persistentes; a fronteira entre os dois está em [`docs/ADR.md`](docs/ADR.md).
 
 `make check` roda `go vet`, `go test` e confere `gofmt`. Ele não usa Docker.
 

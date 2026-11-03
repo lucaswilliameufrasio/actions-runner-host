@@ -60,3 +60,12 @@ O agent oficial instala dependências em três famílias. A CLI segue essa front
 Os nomes dos pacotes acompanham o `installdependencies.sh` do actions/runner, com descoberta da versão de `libssl`/`libopenssl`, `liblttng` e `libicu`. No zypper o runtime do LTTng é o primeiro nome existente entre `lttng-ust`, `liblttng-ust1` e `liblttng-ust0`. Em rpm, `curl-minimal` já satisfaz o comando `curl`, o EL 10 entrega `zlib` pelo pacote `zlib-ng-compat`, e `lttng-ust` pode estar num repositório opcional; a CLI habilita `crb`, `powertools` ou CodeReady se o repositório já estiver definido. O contrato do usuário, a ausência de sudoers e a parada antes do registro continuam iguais.
 
 Alpine fica de fora: o binário oficial do runner é glibc e essa plataforma não está na lista suportada. Imagens de RHEL e SLES que exigem assinatura não entram no teste Docker; Rocky, AlmaLinux, Oracle Linux, CentOS Stream e openSUSE Leap cobrem os mesmos caminhos de pacote.
+
+## Atualização — preparo também no runner-fleet
+
+Status: aceito
+Data: 2026-11-02
+
+Substitui a consequência que tratava o `runner-fleet` só como revisão futura e a alternativa que o recusava para qualquer host único.
+
+O `runner-fleet` agora prepara o host (apt, rpm e zypper) e administra runners de container, runners persistentes na máquina cadastrada e workers EC2 Spot. O registro do fleet neste corte é GitHub e ainda não foi homologado em produção. Esta CLI não muda: continua preparando a VPS e para antes de baixar o actions/runner, sem token, sem `config.sh` e sem control plane. Use a CLI quando não houver painel. Use o fleet quando a máquina, ou as máquinas, forem administradas por ele.
